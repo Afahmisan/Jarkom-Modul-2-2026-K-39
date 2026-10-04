@@ -378,3 +378,457 @@ Verifikasi dari dua klien berbeda bahwa seluruh hostname tersebut ter-resolve ke
     ```
 
     Bukti hasil aplikasi dinamis dan clean URL tersedia pada [image.png](soal10/image.png).
+
+
+---
+
+### 11. Reverse proxy Penny (Apache) dan Abbey (Nginx)
+
+Konfigurasikan Penny menggunakan Apache sebagai reverse proxy untuk meneruskan request ke backend area vault, serta Abbey menggunakan Nginx sebagai reverse proxy untuk meneruskan request ke backend area core. Pastikan kedua layanan dapat diakses melalui hostname yang telah ditentukan dan request dapat diteruskan ke server backend.
+
+**Konfigurasi reverse proxy pada Penny**
+
+Pada node `penny` (`10.83.3.2`), Apache digunakan sebagai reverse proxy untuk meneruskan request menuju backend area vault, yaitu `obladi` dan `desmond`. Modul proxy diaktifkan melalui perintah berikut:
+
+```bash
+apt update
+apt install -y apache2
+a2enmod proxy proxy_http headers
+```
+
+Selanjutnya, dibuat konfigurasi VirtualHost pada `/etc/apache2/sites-available/penny-proxy.conf`:
+
+```apache
+<VirtualHost *:80>
+    ServerName www.k-39.com
+
+    ProxyPreserveHost On
+    ProxyRequests Off
+
+    <Proxy balancer://vaultcluster>
+        BalancerMember http://10.83.1.4:80
+        BalancerMember http://10.83.1.5:80
+        ProxySet lbmethod=byrequests
+    </Proxy>
+
+    ProxyPass        / balancer://vaultcluster/
+    ProxyPassReverse / balancer://vaultcluster/
+
+    RequestHeader set X-Real-IP "%{REMOTE_ADDR}s"
+    RequestHeader add X-Forwarded-For "%{REMOTE_ADDR}s"
+</VirtualHost>
+```
+
+Setelah konfigurasi dibuat, VirtualHost diaktifkan dan layanan Apache dijalankan ulang:
+
+```bash
+a2dissite 000-default.conf
+a2ensite penny-proxy.conf
+apache2ctl configtest
+service apache2 restart
+```
+
+**Konfigurasi reverse proxy pada Abbey**
+
+Pada node `abbey` (`10.83.2.2`), Nginx digunakan sebagai reverse proxy untuk meneruskan request ke backend area core, yaitu `oblada` dan `molly`. Konfigurasi dibuat pada `/etc/nginx/sites-available/abbey-proxy`:
+
+```nginx
+upstream core_cluster {
+    server 10.83.1.6:80;
+    server 10.83.1.7:80;
+}
+
+server {
+    listen 80;
+    server_name static.k-39.com;
+
+    location / {
+        proxy_pass http://core_cluster;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Konfigurasi kemudian diaktifkan dan Nginx dijalankan ulang:
+
+```bash
+rm -f /etc/nginx/sites-enabled/*
+ln -s /etc/nginx/sites-available/abbey-proxy /etc/nginx/sites-enabled/abbey-proxy
+nginx -t
+service nginx restart
+```
+
+**Verifikasi reverse proxy**
+
+Pengujian dilakukan melalui hostname dari klien menggunakan perintah berikut:
+
+```bash
+curl -i http://www.k-39.com/
+curl -i http://static.k-39.com/
+```
+
+Request dapat diuji beberapa kali untuk memeriksa distribusi request ke backend. Hasil aktual berupa halaman atau hostname backend perlu disimpan sebagai bukti pengujian.
+
+### 12. Basic authentication pada Penny untuk `/admin`
+
+Terapkan Basic Authentication pada endpoint `/admin` di Penny agar hanya pengguna yang memiliki kredensial valid yang dapat mengakses halaman tersebut.
+
+**Konfigurasi autentikasi**
+
+Pada node `penny`, utilitas `apache2-utils` dipasang untuk membuat file kredensial menggunakan `htpasswd`:
+
+```bash
+apt install -y apache2-utils
+htpasswd -c /etc/apache2/.htpasswd prabs
+```
+
+Setelah menjalankan perintah tersebut, password dimasukkan ketika diminta. Selanjutnya, aturan autentikasi ditambahkan ke dalam VirtualHost Penny:
+
+```apache
+<Location "/admin">
+    AuthType Basic
+    AuthName "Restricted Admin"
+    AuthUserFile /etc/apache2/.htpasswd
+    Require valid-user
+</Location>
+```
+
+Konfigurasi diperiksa dan layanan Apache dijalankan ulang:
+
+```bash
+apache2ctl configtest
+service apache2 restart
+```
+
+**Verifikasi Basic Authentication**
+
+Pengujian dilakukan dengan mengakses endpoint `/admin` tanpa dan dengan kredensial:
+
+```bash
+curl -i http://www.k-39.com/admin
+curl -i -u prabs http://www.k-39.com/admin
+```
+
+Tanpa kredensial, server seharusnya memberikan status `401 Unauthorized`. Sementara itu, apabila username dan password benar, request akan diteruskan sesuai konfigurasi backend. Password asli tidak dicantumkan pada laporan publik.
+
+### 13. Redirect kanonik: Penny 301 dan Abbey 302
+
+Terapkan pengalihan URL pada Penny menggunakan HTTP status code `301` dan pada Abbey menggunakan HTTP status code `302`. Pastikan masing-masing hostname diarahkan menuju hostname kanonik yang telah ditentukan.
+
+**Konfigurasi redirect pada Penny**
+
+Pada Apache Penny, dibuat VirtualHost untuk mengarahkan akses `penny.k-39.com` menuju `www.k-39.com` secara permanen:
+
+```apache
+<VirtualHost *:80>
+    ServerName penny.k-39.com
+    Redirect permanent / http://www.k-39.com/
+</VirtualHost>
+```
+
+**Konfigurasi redirect pada Abbey**
+
+Pada Nginx Abbey, dibuat server block untuk mengarahkan akses `abbey.k-39.com` menuju `static.k-39.com` dengan status `302`:
+
+```nginx
+server {
+    listen 80;
+    server_name abbey.k-39.com;
+    return 302 http://static.k-39.com$request_uri;
+}
+```
+
+Untuk permintaan berbasis IP, dapat dibuat default server terpisah pada masing-masing layanan. Pastikan konfigurasi server block tidak saling bertabrakan.
+
+Setelah konfigurasi selesai, dilakukan pemeriksaan dan restart layanan:
+
+```bash
+apache2ctl configtest && service apache2 restart
+nginx -t && service nginx restart
+```
+
+**Verifikasi redirect**
+
+Pengujian dilakukan menggunakan perintah berikut:
+
+```bash
+curl -I http://penny.k-39.com/
+curl -I http://abbey.k-39.com/
+```
+
+Hasil yang diharapkan adalah Penny memberikan status `301`, sedangkan Abbey memberikan status `302`. Header `Location` harus menunjukkan hostname tujuan pengalihan yang sesuai.
+
+### 14. Access log backend mencatat IP client asli
+
+Konfigurasikan access log pada backend agar dapat mencatat alamat IP asli klien meskipun request diteruskan melalui reverse proxy Penny dan Abbey.
+
+**Konfigurasi log pada backend Nginx**
+
+Pada node backend area core, yaitu `oblada` dan `molly`, ditambahkan format log khusus pada blok `http {}`:
+
+```nginx
+log_format forwarded '$http_x_real_ip - $remote_user [$time_local] '
+                     '"$request" $status $body_bytes_sent '
+                     '"$http_referer" "$http_user_agent"';
+```
+
+Kemudian, format tersebut digunakan pada blok `server {}`:
+
+```nginx
+access_log /var/log/nginx/access.log forwarded;
+```
+
+**Konfigurasi log pada backend Apache**
+
+Pada node backend area vault, yaitu `obladi` dan `desmond`, modul `remoteip` diaktifkan:
+
+```bash
+a2enmod remoteip
+```
+
+Selanjutnya, ditambahkan konfigurasi berikut pada Apache:
+
+```apache
+RemoteIPHeader X-Real-IP
+```
+
+Setelah konfigurasi selesai, layanan diperiksa dan dijalankan ulang:
+
+```bash
+apache2ctl configtest && service apache2 restart
+nginx -t && service nginx restart
+```
+
+**Verifikasi access log**
+
+Request dilakukan melalui `www.k-39.com` dan `static.k-39.com`. Setelah itu, log diperiksa menggunakan:
+
+```bash
+tail -n 20 /var/log/apache2/access.log
+tail -n 20 /var/log/nginx/access.log
+```
+
+Alamat IP yang tercatat dibandingkan dengan IP klien penguji. Keberhasilan konfigurasi ditentukan berdasarkan hasil log aktual, bukan hanya dari konfigurasi yang telah ditambahkan.
+
+### 15. Proxy khusus `/eternal` di Penny dan `/orion` di Abbey
+
+Buat endpoint khusus `/eternal/` pada Penny dan `/orion/` pada Abbey. Endpoint `/eternal/` digunakan untuk konten PHP, sedangkan `/orion/` digunakan untuk konten statis dengan fitur directory listing.
+
+**Konfigurasi endpoint Eternal pada Penny**
+
+Pada node `penny`, dibuat direktori dan file contoh untuk endpoint Eternal:
+
+```bash
+mkdir -p /var/www/eternal
+echo '<h1>Eternal PHP</h1>' > /var/www/eternal/index.php
+chown -R www-data:www-data /var/www/eternal
+```
+
+Selanjutnya, ditambahkan konfigurasi Alias pada VirtualHost Penny:
+
+```apache
+Alias /eternal/ /var/www/eternal/
+<Directory /var/www/eternal>
+    Options +Indexes
+    AllowOverride None
+    Require all granted
+</Directory>
+```
+
+Handler PHP-FPM atau Apache perlu tersedia dan aktif agar file PHP dieksekusi oleh server, bukan ditampilkan atau diunduh sebagai teks.
+
+**Konfigurasi endpoint Orion pada Abbey**
+
+Pada node `abbey`, dibuat direktori untuk konten statis:
+
+```bash
+mkdir -p /var/www/orion
+echo '<h1>Orion Static</h1>' > /var/www/orion/index.html
+```
+
+Konfigurasi Nginx ditambahkan pada server block Abbey:
+
+```nginx
+location /orion/ {
+    alias /var/www/orion/;
+    index index.html;
+    autoindex on;
+}
+```
+
+Konfigurasi tersebut menggunakan Alias untuk mengarahkan URL `/orion/` ke direktori lokal dan mengaktifkan `autoindex` agar daftar file dapat ditampilkan.
+
+**Verifikasi endpoint**
+
+Pengujian dilakukan menggunakan hostname berikut:
+
+```bash
+curl -i http://www.k-39.com/eternal/
+curl -i http://static.k-39.com/orion/
+```
+
+Hasil pengujian digunakan untuk memastikan endpoint Eternal dapat diakses melalui Penny dan endpoint Orion dapat menampilkan konten statis melalui Abbey.
+
+### 16. Benchmark ApacheBench
+
+Lakukan pengujian performa layanan web menggunakan ApacheBench dari klien Alpha. Pengujian dilakukan terhadap layanan `www.k-39.com` dan `static.k-39.com` dengan jumlah request dan concurrency yang telah ditentukan.
+
+**Instalasi ApacheBench**
+
+Pada node `alpha`, dipasang paket `apache2-utils`:
+
+```bash
+apt update
+apt install -y apache2-utils
+```
+
+**Pelaksanaan benchmark**
+
+Pengujian dilakukan menggunakan 250 request dengan concurrency sebanyak 10:
+
+```bash
+ab -n 250 -c 10 http://www.k-39.com/
+ab -n 250 -c 10 http://static.k-39.com/
+```
+
+**Hasil pengujian**
+
+Dari output ApacheBench, beberapa parameter yang diamati adalah:
+
+- `Complete requests`, yaitu jumlah request yang berhasil diselesaikan.
+- `Failed requests`, yaitu jumlah request yang mengalami kegagalan.
+- `Requests per second`, yaitu jumlah request yang dapat dilayani setiap detik.
+- `Time per request`, yaitu waktu rata-rata yang dibutuhkan untuk menangani request.
+- `Transfer rate`, yaitu kecepatan transfer data selama pengujian.
+
+Hasil aktual dari kedua pengujian dicatat dan dilampirkan sebagai bukti. Nilai benchmark tidak dibuat-buat agar laporan sesuai dengan hasil yang diperoleh saat praktikum.
+
+### 17. TXT record untuk lima klien
+
+Tambahkan TXT record untuk lima klien, yaitu `alpha`, `beta`, `gamma`, `delta`, dan `epsilon`, pada zona DNS `k-39.com` di Prab. Pastikan seluruh record dapat di-query melalui DNS master dan slave.
+
+**Konfigurasi TXT record pada Prab**
+
+Pada file zona master `k-39.com`, ditambahkan record TXT berikut:
+
+```dns
+alpha    IN TXT "alpha"
+beta     IN TXT "beta"
+gamma    IN TXT "gamma"
+delta    IN TXT "delta"
+epsilon  IN TXT "epsilon"
+```
+
+Setelah perubahan dilakukan, serial SOA dinaikkan agar perubahan zona dapat dikenali oleh server slave. Sintaks zona diperiksa dan konfigurasi di-reload menggunakan:
+
+```bash
+named-checkzone k-39.com /etc/bind/k-39/k-39.com
+rndc reload k-39.com
+```
+
+**Verifikasi TXT record**
+
+Query dilakukan dari klien dengan perintah:
+
+```bash
+for h in alpha beta gamma delta epsilon; do
+    dig @10.83.1.2 "$h.k-39.com" TXT +short
+done
+```
+
+Hasil query harus menampilkan nilai TXT yang sesuai dengan nama masing-masing klien. Selanjutnya, dilakukan pemeriksaan melalui DNS slave `tedd` menggunakan alamat `10.83.1.3` untuk memastikan perubahan zona telah diterima.
+
+### 18. Perubahan A record Abbey, TTL 15 detik, dan cache
+
+Ubah A record `abbey.k-39.com` pada DNS master Prab dengan TTL sebesar 15 detik dan alamat IPv4 baru. Amati perubahan jawaban DNS melalui cache resolver sebelum dan sesudah TTL berakhir.
+
+**Konfigurasi A record dan TTL**
+
+Pada zona master `k-39.com`, TTL record Abbey diatur menjadi 15 detik. Sebagai contoh, alamat IPv4 dokumentasi `203.0.113.77` digunakan pada konfigurasi:
+
+```dns
+$TTL 15
+abbey IN A 203.0.113.77
+```
+
+Setelah record diubah, serial SOA dinaikkan, sintaks zona diperiksa, dan layanan DNS di-reload:
+
+```bash
+named-checkzone k-39.com /etc/bind/k-39/k-39.com
+rndc reload k-39.com
+```
+
+**Verifikasi cache DNS**
+
+Pengamatan dilakukan melalui resolver rekursif yang menyimpan cache. Query dicatat sebelum perubahan, segera setelah perubahan, dan setelah TTL berakhir.
+
+Perlu diperhatikan bahwa authoritative server yang ditanya secara langsung dapat memberikan nilai terbaru setelah perubahan zona diterapkan. Oleh karena itu, kondisi ketika alamat lama masih muncul diamati melalui cache resolver, bukan dengan mengharapkan master tetap memberikan jawaban lama.
+
+Hasil pengamatan digunakan untuk melihat pengaruh TTL 15 detik terhadap masa penyimpanan jawaban DNS pada cache.
+
+### 19. CNAME outbound ke domain eksternal
+
+Tambahkan CNAME `outbound.k-39.com` yang mengarah ke domain eksternal `http.badssl.com`. Verifikasi resolusi DNS dan akses HTTP melalui hostname tersebut.
+
+**Konfigurasi CNAME outbound**
+
+Pada zona `k-39.com`, ditambahkan record berikut:
+
+```dns
+outbound IN CNAME http.badssl.com.
+```
+
+Pastikan tidak terdapat record A atau AAAA lain dengan nama owner `outbound`. Setelah itu, serial SOA dinaikkan, sintaks zona diperiksa, dan konfigurasi di-reload.
+
+**Verifikasi DNS dan HTTP**
+
+Pengujian dilakukan menggunakan perintah:
+
+```bash
+dig outbound.k-39.com CNAME +short
+curl -i http://outbound.k-39.com
+```
+
+Query DNS digunakan untuk memastikan bahwa `outbound.k-39.com` mengarah ke target CNAME yang benar.
+
+CNAME hanya berfungsi untuk pemetaan nama domain. Sementara itu, hasil akses HTTP dapat bergantung pada konfigurasi virtual hosting dan Host header yang digunakan oleh server tujuan. Oleh karena itu, hasil `curl` aktual dicatat dan dibandingkan dengan akses langsung ke `http://http.badssl.com`.
+
+### 20. Pemeriksaan layanan dan autostart
+
+Lakukan pemeriksaan akhir terhadap layanan DNS, Apache, dan Nginx pada node yang relevan. Pastikan layanan dapat berjalan kembali setelah node di-restart dan konfigurasi jaringan maupun layanan tetap berfungsi.
+
+**Pemeriksaan status layanan**
+
+Status layanan diperiksa menggunakan perintah berikut sesuai layanan yang terpasang pada masing-masing node:
+
+```bash
+service bind9 status
+service apache2 status
+service nginx status
+```
+
+**Konfigurasi autostart**
+
+Agar layanan berjalan secara otomatis saat sistem dinyalakan, digunakan perintah:
+
+```bash
+systemctl enable bind9
+systemctl enable apache2
+systemctl enable nginx
+```
+
+Pada image yang tidak menggunakan systemd, digunakan mekanisme init atau service yang tersedia. Konfigurasi jaringan dan skrip setup juga perlu dipastikan berjalan ketika node mulai beroperasi.
+
+**Verifikasi akhir**
+
+Setelah konfigurasi selesai, node di-restart satu per satu. Kemudian dilakukan pengujian ulang terhadap DNS, HTTP, reverse proxy, autentikasi, dan redirect untuk memastikan layanan tetap berjalan.
+
+Konfigurasi soal 18 diabaikan pada pemeriksaan akhir sesuai instruksi soal.
+
+**Bukti pengerjaan**
+
+Screenshot atau output terminal dilampirkan untuk menunjukkan konfigurasi yang valid, hasil query DNS, response HTTP, access log, hasil benchmark, dan status layanan. Hasil yang dicantumkan pada laporan disesuaikan dengan pengujian yang benar-benar dilakukan.
+
