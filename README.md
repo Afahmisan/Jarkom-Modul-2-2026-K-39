@@ -1,9 +1,9 @@
 # Jarkom-Modul-2-2026-K-39
 
-| Nama | NRP |
-|---|---|
-| Asfia Fahmisan | 5027251043 |
-| Muhammad Atallah Mas'udi | 5027251071 |
+| Nama | NRP | Pembagian Tugas | 
+|---|---|---|
+| Asfia Fahmisan | 5027251043 | Soal 1 -- 10 |
+| Muhammad Atallah Mas'udi | 5027251071 | Soal 11 -- 20 |  
 
 1. Sebagai pusat kesadaran The Mesh, rootkit harus merentangkan koneksinya ke lima gerbang utama (Switch). Tetapkan alamat IP dan default gateway untuk seluruh Entitas, mulai dari para operator (alpha, beta, gamma), penjaga directory (prab, tedd), gerbang penyaring (abbey, penny), hingga repository (obladi, desmond, oblada, molly) sesuai dengan topologi pembagian switch yang dirancang. [GUNAKAN PREFIX IP MASING-MASING KELOMPOK].
 
